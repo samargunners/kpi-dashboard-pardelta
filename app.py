@@ -87,6 +87,12 @@ def get_date_range(period: str) -> Tuple[datetime, datetime]:
     """
     Calculate start and end dates based on period selection.
     
+    Special handling for Week to Date:
+    - On Sunday (day 0): Show LAST complete week (previous Sun-Sat)
+      Reason: Saturday's data arrives by 9 AM Sunday, but Sunday's data isn't complete yet
+    - On Monday-Saturday (days 1-6): Show CURRENT week to date (Sun-today)
+      Reason: Previous Sunday's data is now available
+    
     Args:
         period: One of "Week to Date", "Month to Date", "Year to Date"
     
@@ -97,9 +103,21 @@ def get_date_range(period: str) -> Tuple[datetime, datetime]:
     
     if period == "Week to Date":
         # Week is Sunday to Saturday
-        days_since_sunday = (today.weekday() + 1) % 7
-        start_date = today - timedelta(days=days_since_sunday)
-        end_date = today
+        current_day_of_week = (today.weekday() + 1) % 7  # 0=Sunday, 1=Monday, ..., 6=Saturday
+        
+        if current_day_of_week == 0:  # Sunday
+            # Show LAST complete week (previous Sunday to Saturday)
+            # Go back 7 days to last Sunday, then that's the start
+            last_sunday = today - timedelta(days=7)
+            last_saturday = today - timedelta(days=1)
+            start_date = last_sunday
+            end_date = last_saturday
+        else:  # Monday through Saturday
+            # Show CURRENT week to date (this Sunday to today)
+            days_since_sunday = current_day_of_week
+            start_date = today - timedelta(days=days_since_sunday)
+            end_date = today
+            
     elif period == "Month to Date":
         start_date = today.replace(day=1)
         end_date = today
