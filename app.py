@@ -1,47 +1,459 @@
 import pandas as pd
 import streamlit as st
+from datetime import datetime, timedelta
+from supabase import create_client, Client
+import psycopg2
+from typing import Dict, List, Tuple, Optional
 
-
+# Page config
 st.set_page_config(page_title="Pardelta Dashboard", layout="wide")
 
-st.title("Pardelta Dashboard")
-st.caption("Skeleton UI with mock data. Replace mock data with Supabase queries.")
+# Real store data
+STORES = [
+    {
+        "pc_number": "301290",
+        "store_name": "Paxton",
+        "address": "2820 Paxton Street",
+        "company": "RK Inc",
+        "bank_account_last4": "9427",
+    },
+    {
+        "pc_number": "343939",
+        "store_name": "Mt Joy",
+        "address": "807 E Maint St",
+        "company": "RK Inc",
+        "bank_account_last4": "1672",
+    },
+    {
+        "pc_number": "357993",
+        "store_name": "Enola",
+        "address": "423 N. Enola Rd",
+        "company": "RK Inc",
+        "bank_account_last4": "1867",
+    },
+    {
+        "pc_number": "358529",
+        "store_name": "Columbia",
+        "address": "3929 Columbia Ave",
+        "company": "Par-Delta",
+        "bank_account_last4": "2415",
+    },
+    {
+        "pc_number": "359042",
+        "store_name": "Lititz",
+        "address": "737 S. Broad Street",
+        "company": "Par-Delta",
+        "bank_account_last4": "3421",
+    },
+    {
+        "pc_number": "362913",
+        "store_name": "Eisenhower",
+        "address": "900 Eisenhower Blvd",
+        "company": "KPA",
+        "bank_account_last4": "1347",
+    },
+    {
+        "pc_number": "363271",
+        "store_name": "Marietta",
+        "address": "1154 River Rd",
+        "company": "RK Inc",
+        "bank_account_last4": "4837",
+    },
+    {
+        "pc_number": "364322",
+        "store_name": "ETown",
+        "address": "820 S. Market Street",
+        "company": "Par-Delta",
+        "bank_account_last4": "6345",
+    },
+]
 
 
 def get_supabase_config():
+    """Extract Supabase configuration from Streamlit secrets."""
     supabase = st.secrets.get("supabase", {})
     return {
         "url": st.secrets.get("supabase_url", ""),
         "key": st.secrets.get("supabase_anon_key", ""),
         "host": supabase.get("host", ""),
-        "database": supabase.get("database", ""),
-        "dbname": supabase.get("dbname", ""),
+        "database": supabase.get("database", "") or supabase.get("dbname", ""),
         "user": supabase.get("user", ""),
         "password": supabase.get("password", ""),
-        "port": supabase.get("port", ""),
+        "port": supabase.get("port", 5432),
     }
 
 
-def mask_value(value, keep=2):
-    if not value:
-        return ""
-    if len(value) <= keep:
-        return "*" * len(value)
-    return f"{value[:keep]}{'*' * (len(value) - keep)}"
+def get_date_range(period: str) -> Tuple[datetime, datetime]:
+    """
+    Calculate start and end dates based on period selection.
+    
+    Args:
+        period: One of "Week to Date", "Month to Date", "Year to Date"
+    
+    Returns:
+        Tuple of (start_date, end_date)
+    """
+    today = datetime.now().date()
+    
+    if period == "Week to Date":
+        # Week is Sunday to Saturday
+        days_since_sunday = (today.weekday() + 1) % 7
+        start_date = today - timedelta(days=days_since_sunday)
+        end_date = today
+    elif period == "Month to Date":
+        start_date = today.replace(day=1)
+        end_date = today
+    else:  # Year to Date
+        start_date = today.replace(month=1, day=1)
+        end_date = today
+    
+    return datetime.combine(start_date, datetime.min.time()), datetime.combine(end_date, datetime.max.time())
 
 
-def color_for_metric(metric, value):
+@st.cache_resource
+def get_supabase_client() -> Optional[Client]:
+    """Create and cache Supabase client."""
+    config = get_supabase_config()
+    if config["url"] and config["key"]:
+        try:
+            return create_client(config["url"], config["key"])
+        except Exception as e:
+            st.error(f"Failed to create Supabase client: {e}")
+            return None
+    return None
+
+
+@st.cache_resource
+def get_postgres_connection():
+    """Create and cache PostgreSQL connection."""
+    config = get_supabase_config()
+    if config["host"] and config["database"] and config["user"] and config["password"]:
+        try:
+            conn = psycopg2.connect(
+                host=config["host"],
+                database=config["database"],
+                user=config["user"],
+                password=config["password"],
+                port=config["port"],
+            )
+            return conn
+        except Exception as e:
+            st.error(f"Failed to connect to PostgreSQL: {e}")
+            return None
+    return None
+
+
+@st.cache_data(ttl=300)  # Cache for 5 minutes
+def fetch_hme_data(start_date: datetime, end_date: datetime, use_postgres: bool = True) -> pd.DataFrame:
+    """
+    Fetch HME report data from Supabase.
+    
+    Returns DataFrame with columns: date, store, time_measure, lane_total
+    """
+    try:
+        if use_postgres:
+            conn = get_postgres_connection()
+            if conn:
+                query = """
+                    SELECT date, store, time_measure, lane_total
+                    FROM hme_report
+                    WHERE date >= %s AND date <= %s
+                    ORDER BY date, store, time_measure
+                """
+                df = pd.read_sql_query(query, conn, params=(start_date, end_date))
+                return df
+        else:
+            client = get_supabase_client()
+            if client:
+                response = (
+                    client.table("hme_report")
+                    .select("date,store,time_measure,lane_total")
+                    .gte("date", start_date.strftime("%Y-%m-%d"))
+                    .lte("date", end_date.strftime("%Y-%m-%d"))
+                    .execute()
+                )
+                return pd.DataFrame(response.data)
+    except Exception as e:
+        st.error(f"Error fetching HME data: {e}")
+    
+    return pd.DataFrame()
+
+
+@st.cache_data(ttl=300)
+def fetch_labor_data(start_date: datetime, end_date: datetime, use_postgres: bool = True) -> pd.DataFrame:
+    """
+    Fetch labor metrics data from Supabase.
+    
+    Returns DataFrame with columns: date, pc_number, labor_position, percent_labor
+    """
+    try:
+        if use_postgres:
+            conn = get_postgres_connection()
+            if conn:
+                query = """
+                    SELECT date, pc_number, labor_position, percent_labor
+                    FROM labor_metrics
+                    WHERE date >= %s AND date <= %s
+                    ORDER BY date, pc_number, labor_position
+                """
+                df = pd.read_sql_query(query, conn, params=(start_date, end_date))
+                return df
+        else:
+            client = get_supabase_client()
+            if client:
+                response = (
+                    client.table("labor_metrics")
+                    .select("date,pc_number,labor_position,percent_labor")
+                    .gte("date", start_date.strftime("%Y-%m-%d"))
+                    .lte("date", end_date.strftime("%Y-%m-%d"))
+                    .execute()
+                )
+                return pd.DataFrame(response.data)
+    except Exception as e:
+        st.error(f"Error fetching labor data: {e}")
+    
+    return pd.DataFrame()
+
+
+@st.cache_data(ttl=300)
+def fetch_medallia_data(start_date: datetime, end_date: datetime, use_postgres: bool = True) -> pd.DataFrame:
+    """
+    Fetch Medallia (OSAT) data from Supabase.
+    
+    Returns DataFrame with columns: report_date, pc_number, osat
+    """
+    try:
+        if use_postgres:
+            conn = get_postgres_connection()
+            if conn:
+                query = """
+                    SELECT report_date, pc_number, osat
+                    FROM medallia_report
+                    WHERE report_date >= %s AND report_date <= %s
+                    AND osat IS NOT NULL
+                    ORDER BY report_date, pc_number
+                """
+                df = pd.read_sql_query(query, conn, params=(start_date, end_date))
+                return df
+        else:
+            client = get_supabase_client()
+            if client:
+                response = (
+                    client.table("medallia_report")
+                    .select("report_date,pc_number,osat")
+                    .gte("report_date", start_date.strftime("%Y-%m-%d"))
+                    .lte("report_date", end_date.strftime("%Y-%m-%d"))
+                    .not_.is_("osat", "null")
+                    .execute()
+                )
+                return pd.DataFrame(response.data)
+    except Exception as e:
+        st.error(f"Error fetching Medallia data: {e}")
+    
+    return pd.DataFrame()
+
+
+def calculate_hme_metrics(df: pd.DataFrame) -> Tuple[Dict[str, Dict[str, int]], Dict[str, float]]:
+    """
+    Calculate HME rankings and averages.
+    
+    Args:
+        df: HME report DataFrame
+    
+    Returns:
+        Tuple of (color_counts, averages) where:
+        - color_counts: {pc_number: {Green: count, Yellow: count, Red: count}}
+        - averages: {pc_number: average_lane_total}
+    """
+    if df.empty:
+        return {}, {}
+    
+    # Convert store (bigint) to pc_number (string)
+    store_to_pc = {int(s["pc_number"]): s["pc_number"] for s in STORES}
+    
+    # Calculate daily average across all 5 dayparts
+    df["date"] = pd.to_datetime(df["date"])
+    daily_avg = df.groupby(["date", "store"])["lane_total"].mean().reset_index()
+    daily_avg["pc_number"] = daily_avg["store"].map(store_to_pc)
+    
+    # Color coding based on average lane_total
+    color_counts = {}
+    averages = {}
+    
+    for pc in [s["pc_number"] for s in STORES]:
+        store_data = daily_avg[daily_avg["pc_number"] == pc]
+        
+        if len(store_data) == 0:
+            color_counts[pc] = {"Green": 0, "Yellow": 0, "Red": 0}
+            averages[pc] = 0
+            continue
+        
+        green = (store_data["lane_total"] <= 150).sum()
+        yellow = ((store_data["lane_total"] > 150) & (store_data["lane_total"] <= 160)).sum()
+        red = (store_data["lane_total"] > 160).sum()
+        
+        color_counts[pc] = {"Green": int(green), "Yellow": int(yellow), "Red": int(red)}
+        averages[pc] = float(store_data["lane_total"].mean())
+    
+    return color_counts, averages
+
+
+def calculate_hme_dp2_metrics(df: pd.DataFrame) -> Tuple[Dict[str, Dict[str, int]], Dict[str, float]]:
+    """
+    Calculate HME Daypart 2 rankings and averages.
+    
+    Args:
+        df: HME report DataFrame
+    
+    Returns:
+        Tuple of (color_counts, averages)
+    """
+    if df.empty:
+        return {}, {}
+    
+    # Filter for Daypart 2 only
+    df_dp2 = df[df["time_measure"] == "Daypart 2"].copy()
+    
+    if df_dp2.empty:
+        return {}, {}
+    
+    store_to_pc = {int(s["pc_number"]): s["pc_number"] for s in STORES}
+    df_dp2["date"] = pd.to_datetime(df_dp2["date"])
+    df_dp2["pc_number"] = df_dp2["store"].map(store_to_pc)
+    
+    color_counts = {}
+    averages = {}
+    
+    for pc in [s["pc_number"] for s in STORES]:
+        store_data = df_dp2[df_dp2["pc_number"] == pc]
+        
+        if len(store_data) == 0:
+            color_counts[pc] = {"Green": 0, "Yellow": 0, "Red": 0}
+            averages[pc] = 0
+            continue
+        
+        green = (store_data["lane_total"] <= 140).sum()
+        yellow = ((store_data["lane_total"] > 140) & (store_data["lane_total"] <= 150)).sum()
+        red = (store_data["lane_total"] > 150).sum()
+        
+        color_counts[pc] = {"Green": int(green), "Yellow": int(yellow), "Red": int(red)}
+        averages[pc] = float(store_data["lane_total"].mean())
+    
+    return color_counts, averages
+
+
+def calculate_labor_metrics(df: pd.DataFrame) -> Tuple[Dict[str, Dict[str, int]], Dict[str, float]]:
+    """
+    Calculate Labor rankings and averages.
+    
+    Excludes: "DD Manager" and "DD Manager - Salary"
+    
+    Args:
+        df: Labor metrics DataFrame
+    
+    Returns:
+        Tuple of (color_counts, averages)
+    """
+    if df.empty:
+        return {}, {}
+    
+    # Exclude manager positions
+    excluded_positions = ["DD Manager", "DD Manager - Salary"]
+    df_filtered = df[~df["labor_position"].isin(excluded_positions)].copy()
+    
+    if df_filtered.empty:
+        return {}, {}
+    
+    df_filtered["date"] = pd.to_datetime(df_filtered["date"])
+    
+    # Sum percent_labor by date and pc_number
+    daily_labor = df_filtered.groupby(["date", "pc_number"])["percent_labor"].sum().reset_index()
+    daily_labor["percent_labor"] = daily_labor["percent_labor"] * 100  # Convert to percentage
+    
+    color_counts = {}
+    averages = {}
+    
+    for pc in [s["pc_number"] for s in STORES]:
+        store_data = daily_labor[daily_labor["pc_number"] == pc]
+        
+        if len(store_data) == 0:
+            color_counts[pc] = {"Green": 0, "Yellow": 0, "Red": 0}
+            averages[pc] = 0
+            continue
+        
+        green = (store_data["percent_labor"] < 20).sum()
+        yellow = ((store_data["percent_labor"] >= 20) & (store_data["percent_labor"] <= 23)).sum()
+        red = (store_data["percent_labor"] > 23).sum()
+        
+        color_counts[pc] = {"Green": int(green), "Yellow": int(yellow), "Red": int(red)}
+        averages[pc] = float(store_data["percent_labor"].mean())
+    
+    return color_counts, averages
+
+
+def calculate_osat_metrics(df: pd.DataFrame) -> Tuple[Dict[str, Dict[str, int]], Dict[str, float]]:
+    """
+    Calculate OSAT rankings and averages.
+    
+    Args:
+        df: Medallia report DataFrame
+    
+    Returns:
+        Tuple of (color_counts, averages) where averages are in percentage (0-100)
+    """
+    if df.empty:
+        return {}, {}
+    
+    df["report_date"] = pd.to_datetime(df["report_date"])
+    
+    # Calculate daily average OSAT and convert to percentage
+    daily_osat = df.groupby(["report_date", "pc_number"])["osat"].mean().reset_index()
+    daily_osat["osat_percent"] = (daily_osat["osat"] / 5) * 100
+    
+    color_counts = {}
+    averages = {}
+    
+    for pc in [s["pc_number"] for s in STORES]:
+        store_data = daily_osat[daily_osat["pc_number"] == pc]
+        
+        if len(store_data) == 0:
+            color_counts[pc] = {"Green": 0, "Yellow": 0, "Red": 0}
+            averages[pc] = 0
+            continue
+        
+        green = (store_data["osat_percent"] > 90).sum()
+        yellow = ((store_data["osat_percent"] >= 85) & (store_data["osat_percent"] <= 90)).sum()
+        red = (store_data["osat_percent"] < 85).sum()
+        
+        color_counts[pc] = {"Green": int(green), "Yellow": int(yellow), "Red": int(red)}
+        averages[pc] = float(store_data["osat_percent"].mean())
+    
+    return color_counts, averages
+
+
+def color_for_metric(metric: str, value: float) -> str:
+    """
+    Return CSS background color for a metric value.
+    
+    Args:
+        metric: One of "HME", "HME DP_2", "Labour", "OSAT"
+        value: Metric value
+    
+    Returns:
+        CSS style string
+    """
     green = "#c6efce"
     yellow = "#ffeb9c"
     red = "#ffc7ce"
 
-    if metric in ("HME", "HME DP_2"):
-        if metric == "HME":
-            if value <= 150:
-                return f"background-color: {green}"
-            if value <= 160:
-                return f"background-color: {yellow}"
-            return f"background-color: {red}"
+    if metric == "HME":
+        if value <= 150:
+            return f"background-color: {green}"
+        if value <= 160:
+            return f"background-color: {yellow}"
+        return f"background-color: {red}"
+    
+    if metric == "HME DP_2":
         if value <= 140:
             return f"background-color: {green}"
         if value <= 150:
@@ -65,9 +477,18 @@ def color_for_metric(metric, value):
     return ""
 
 
-def build_ranking_table(stores, counts):
+def build_ranking_table(counts: Dict[str, Dict[str, int]]) -> pd.DataFrame:
+    """
+    Build ranking table from color counts.
+    
+    Args:
+        counts: {pc_number: {Green: count, Yellow: count, Red: count}}
+    
+    Returns:
+        DataFrame sorted by Red count (descending) then pc_number
+    """
     rows = []
-    for store in stores:
+    for store in STORES:
         pc = store["pc_number"]
         row = counts.get(pc, {"Green": 0, "Yellow": 0, "Red": 0})
         rows.append(
@@ -85,17 +506,72 @@ def build_ranking_table(stores, counts):
     return df[["Store", "Green", "Yellow", "Red"]]
 
 
-stores = [
-    {"pc_number": 101, "store_name": "Pardelta North"},
-    {"pc_number": 102, "store_name": "Pardelta East"},
-    {"pc_number": 103, "store_name": "Pardelta South"},
-    {"pc_number": 104, "store_name": "Pardelta West"},
-    {"pc_number": 105, "store_name": "Pardelta Central"},
-    {"pc_number": 106, "store_name": "Pardelta River"},
-    {"pc_number": 107, "store_name": "Pardelta Lake"},
-    {"pc_number": 108, "store_name": "Pardelta Hill"},
-]
+def build_performance_table(
+    hme_avg: Dict[str, float],
+    hme_dp2_avg: Dict[str, float],
+    labor_avg: Dict[str, float],
+    osat_avg: Dict[str, float],
+) -> pd.DataFrame:
+    """
+    Build performance table with all metrics.
+    
+    Args:
+        hme_avg: {pc_number: average_hme}
+        hme_dp2_avg: {pc_number: average_hme_dp2}
+        labor_avg: {pc_number: average_labor_percent}
+        osat_avg: {pc_number: average_osat_percent}
+    
+    Returns:
+        Styled DataFrame
+    """
+    rows = []
+    for store in sorted(STORES, key=lambda x: x["pc_number"]):
+        pc = store["pc_number"]
+        rows.append(
+            {
+                "pc_number": pc,
+                "Store": store["store_name"],
+                "HME": hme_avg.get(pc, 0),
+                "HME DP_2": hme_dp2_avg.get(pc, 0),
+                "Labour": labor_avg.get(pc, 0),
+                "OSAT": osat_avg.get(pc, 0),
+            }
+        )
 
+    perf_df = pd.DataFrame(rows)
+    perf_df = perf_df[["Store", "HME", "HME DP_2", "Labour", "OSAT"]]
+
+    # Apply styling
+    styled = perf_df.style
+    for metric in ["HME", "HME DP_2", "Labour", "OSAT"]:
+        styled = styled.applymap(lambda v, m=metric: color_for_metric(m, v), subset=[metric])
+
+    styled = styled.format(
+        {
+            "HME": "{:.0f}",
+            "HME DP_2": "{:.0f}",
+            "Labour": "{:.1f}%",
+            "OSAT": "{:.0f}%",
+        }
+    )
+
+    return styled
+
+
+def mask_value(value: str, keep: int = 2) -> str:
+    """Mask a value for display."""
+    if not value:
+        return ""
+    if len(value) <= keep:
+        return "*" * len(value)
+    return f"{value[:keep]}{'*' * (len(value) - keep)}"
+
+
+# Main App
+st.title("Pardelta Dashboard")
+st.caption("Real-time performance metrics across all stores")
+
+# Sidebar
 config = get_supabase_config()
 with st.sidebar:
     st.header("Filters")
@@ -104,116 +580,76 @@ with st.sidebar:
         ["Week to Date", "Month to Date", "Year to Date"],
         index=0,
     )
+    
+    # Connection status
     has_url = bool(config["url"] and config["key"])
     has_pg = bool(
         config["host"] and config["database"] and config["user"] and config["password"]
     )
+    
+    use_postgres = st.checkbox("Use PostgreSQL (faster)", value=has_pg)
+    
     if has_url or has_pg:
-        st.success("Supabase configured")
+        st.success("✓ Supabase configured")
     else:
-        st.warning("Supabase not configured")
+        st.warning("⚠ Supabase not configured")
 
-    with st.expander("Supabase secret status", expanded=False):
-        st.write("URL key configured:", "Yes" if has_url else "No")
-        st.write("Postgres configured:", "Yes" if has_pg else "No")
+    with st.expander("Connection Details", expanded=False):
+        st.write("**API Client:**", "Yes" if has_url else "No")
+        st.write("**PostgreSQL:**", "Yes" if has_pg else "No")
         if has_pg:
             st.write("Host:", config["host"])
-            st.write("Database:", config["database"] or config["dbname"])
+            st.write("Database:", config["database"])
             st.write("User:", mask_value(config["user"]))
             st.write("Port:", config["port"])
-            st.write("Password:", "set")
 
-st.subheader("Ranking Tables")
+# Get date range
+start_date, end_date = get_date_range(period)
+st.sidebar.info(f"📅 {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
 
-hme_counts = {
-    101: {"Green": 4, "Yellow": 2, "Red": 1},
-    102: {"Green": 3, "Yellow": 2, "Red": 2},
-    103: {"Green": 2, "Yellow": 2, "Red": 3},
-    104: {"Green": 5, "Yellow": 1, "Red": 1},
-    105: {"Green": 3, "Yellow": 3, "Red": 1},
-    106: {"Green": 2, "Yellow": 3, "Red": 2},
-    107: {"Green": 4, "Yellow": 1, "Red": 2},
-    108: {"Green": 1, "Yellow": 3, "Red": 3},
-}
+# Fetch data
+with st.spinner("Loading data..."):
+    hme_df = fetch_hme_data(start_date, end_date, use_postgres)
+    labor_df = fetch_labor_data(start_date, end_date, use_postgres)
+    medallia_df = fetch_medallia_data(start_date, end_date, use_postgres)
 
-hme_dp2_counts = {
-    101: {"Green": 3, "Yellow": 3, "Red": 1},
-    102: {"Green": 2, "Yellow": 3, "Red": 2},
-    103: {"Green": 3, "Yellow": 2, "Red": 2},
-    104: {"Green": 4, "Yellow": 2, "Red": 1},
-    105: {"Green": 2, "Yellow": 4, "Red": 1},
-    106: {"Green": 1, "Yellow": 3, "Red": 3},
-    107: {"Green": 5, "Yellow": 1, "Red": 1},
-    108: {"Green": 2, "Yellow": 2, "Red": 3},
-}
+# Calculate metrics
+hme_counts, hme_avg = calculate_hme_metrics(hme_df)
+hme_dp2_counts, hme_dp2_avg = calculate_hme_dp2_metrics(hme_df)
+labor_counts, labor_avg = calculate_labor_metrics(labor_df)
+osat_counts, osat_avg = calculate_osat_metrics(medallia_df)
 
-labour_counts = {
-    101: {"Green": 5, "Yellow": 1, "Red": 1},
-    102: {"Green": 3, "Yellow": 2, "Red": 2},
-    103: {"Green": 2, "Yellow": 3, "Red": 2},
-    104: {"Green": 4, "Yellow": 2, "Red": 1},
-    105: {"Green": 1, "Yellow": 3, "Red": 3},
-    106: {"Green": 3, "Yellow": 3, "Red": 1},
-    107: {"Green": 4, "Yellow": 1, "Red": 2},
-    108: {"Green": 2, "Yellow": 2, "Red": 3},
-}
-
-osat_counts = {
-    101: {"Green": 4, "Yellow": 2, "Red": 1},
-    102: {"Green": 3, "Yellow": 3, "Red": 1},
-    103: {"Green": 2, "Yellow": 2, "Red": 3},
-    104: {"Green": 5, "Yellow": 1, "Red": 1},
-    105: {"Green": 3, "Yellow": 2, "Red": 2},
-    106: {"Green": 2, "Yellow": 3, "Red": 2},
-    107: {"Green": 4, "Yellow": 1, "Red": 2},
-    108: {"Green": 1, "Yellow": 3, "Red": 3},
-}
+# First Half - Ranking Tables
+st.subheader("📊 Performance Rankings")
+st.caption("Stores ranked by number of days in each performance category")
 
 ranking_cols = st.columns(4)
 with ranking_cols[0]:
     st.markdown("**HME**")
-    st.dataframe(build_ranking_table(stores, hme_counts), use_container_width=True)
+    st.dataframe(build_ranking_table(hme_counts), use_container_width=True, hide_index=True)
 with ranking_cols[1]:
     st.markdown("**HME DP_2**")
-    st.dataframe(build_ranking_table(stores, hme_dp2_counts), use_container_width=True)
+    st.dataframe(build_ranking_table(hme_dp2_counts), use_container_width=True, hide_index=True)
 with ranking_cols[2]:
     st.markdown("**Labour**")
-    st.dataframe(build_ranking_table(stores, labour_counts), use_container_width=True)
+    st.dataframe(build_ranking_table(labor_counts), use_container_width=True, hide_index=True)
 with ranking_cols[3]:
     st.markdown("**OSAT**")
-    st.dataframe(build_ranking_table(stores, osat_counts), use_container_width=True)
+    st.dataframe(build_ranking_table(osat_counts), use_container_width=True, hide_index=True)
 
-st.subheader("Performance Table")
+# Second Half - Performance Table
+st.subheader("📈 Store Performance Metrics")
+st.caption("Average performance across all stores")
 
-perf_rows = []
-for store in stores:
-    perf_rows.append(
-        {
-            "pc_number": store["pc_number"],
-            "Store": store["store_name"],
-            "HME": 148 + (store["pc_number"] % 7) * 3,
-            "HME DP_2": 138 + (store["pc_number"] % 6) * 3,
-            "Labour": 18 + (store["pc_number"] % 6),
-            "OSAT": 84 + (store["pc_number"] % 10),
-        }
-    )
+styled_perf = build_performance_table(hme_avg, hme_dp2_avg, labor_avg, osat_avg)
+st.dataframe(styled_perf, use_container_width=True, hide_index=True)
 
-perf_df = pd.DataFrame(perf_rows).sort_values("pc_number")
-perf_df = perf_df[["Store", "HME", "HME DP_2", "Labour", "OSAT"]]
-
-styled = perf_df.style
-for metric in ["HME", "HME DP_2", "Labour", "OSAT"]:
-    styled = styled.applymap(lambda v, m=metric: color_for_metric(m, v), subset=[metric])
-
-styled = styled.format(
-    {
-        "HME": "{:.0f}",
-        "HME DP_2": "{:.0f}",
-        "Labour": "{:.1f}%",
-        "OSAT": "{:.0f}%",
-    }
-)
-
-st.dataframe(styled, use_container_width=True)
-
-st.caption(f"Selected period: {period}")
+# Footer
+st.divider()
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.metric("Period", period)
+with col2:
+    st.metric("HME Records", len(hme_df))
+with col3:
+    st.metric("OSAT Responses", len(medallia_df))
