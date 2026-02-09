@@ -273,179 +273,203 @@ def fetch_medallia_data(start_date: datetime, end_date: datetime, use_postgres: 
 
 def calculate_hme_metrics(df: pd.DataFrame) -> Tuple[Dict[str, Dict[str, int]], Dict[str, float]]:
     """
-    Calculate HME rankings and averages.
-    
+    Calculate HME rankings and averages by week.
+
     Args:
         df: HME report DataFrame
-    
+
     Returns:
         Tuple of (color_counts, averages) where:
-        - color_counts: {pc_number: {Green: count, Yellow: count, Red: count}}
+        - color_counts: {pc_number: {Green: count, Yellow: count, Red: count}} - counts of weeks
         - averages: {pc_number: average_lane_total}
     """
     if df.empty:
         return {}, {}
-    
+
     # Convert store (bigint) to pc_number (string)
     store_to_pc = {int(s["pc_number"]): s["pc_number"] for s in STORES}
-    
+
     # Calculate daily average across all 5 dayparts
     df["date"] = pd.to_datetime(df["date"])
     daily_avg = df.groupby(["date", "store"])["lane_total"].mean().reset_index()
     daily_avg["pc_number"] = daily_avg["store"].map(store_to_pc)
-    
+
+    # Assign week (Sunday to Saturday) - week starts on Sunday
+    daily_avg["week"] = daily_avg["date"].dt.to_period("W-SAT")
+
+    # Calculate weekly average
+    weekly_avg = daily_avg.groupby(["week", "pc_number"])["lane_total"].mean().reset_index()
+
     # Color coding based on average lane_total
     color_counts = {}
     averages = {}
-    
+
     for pc in [s["pc_number"] for s in STORES]:
-        store_data = daily_avg[daily_avg["pc_number"] == pc]
-        
+        store_data = weekly_avg[weekly_avg["pc_number"] == pc]
+
         if len(store_data) == 0:
             color_counts[pc] = {"Green": 0, "Yellow": 0, "Red": 0}
             averages[pc] = 0
             continue
-        
+
         green = (store_data["lane_total"] <= 150).sum()
         yellow = ((store_data["lane_total"] > 150) & (store_data["lane_total"] <= 160)).sum()
         red = (store_data["lane_total"] > 160).sum()
-        
+
         color_counts[pc] = {"Green": int(green), "Yellow": int(yellow), "Red": int(red)}
         averages[pc] = float(store_data["lane_total"].mean())
-    
+
     return color_counts, averages
 
 
 def calculate_hme_dp2_metrics(df: pd.DataFrame) -> Tuple[Dict[str, Dict[str, int]], Dict[str, float]]:
     """
-    Calculate HME Daypart 2 rankings and averages.
-    
+    Calculate HME Daypart 2 rankings and averages by week.
+
     Args:
         df: HME report DataFrame
-    
+
     Returns:
-        Tuple of (color_counts, averages)
+        Tuple of (color_counts, averages) where counts are weeks in each color
     """
     if df.empty:
         return {}, {}
-    
+
     # Filter for Daypart 2 only
     df_dp2 = df[df["time_measure"] == "Daypart 2"].copy()
-    
+
     if df_dp2.empty:
         return {}, {}
-    
+
     store_to_pc = {int(s["pc_number"]): s["pc_number"] for s in STORES}
     df_dp2["date"] = pd.to_datetime(df_dp2["date"])
     df_dp2["pc_number"] = df_dp2["store"].map(store_to_pc)
-    
+
+    # Assign week (Sunday to Saturday)
+    df_dp2["week"] = df_dp2["date"].dt.to_period("W-SAT")
+
+    # Calculate weekly average
+    weekly_avg = df_dp2.groupby(["week", "pc_number"])["lane_total"].mean().reset_index()
+
     color_counts = {}
     averages = {}
-    
+
     for pc in [s["pc_number"] for s in STORES]:
-        store_data = df_dp2[df_dp2["pc_number"] == pc]
-        
+        store_data = weekly_avg[weekly_avg["pc_number"] == pc]
+
         if len(store_data) == 0:
             color_counts[pc] = {"Green": 0, "Yellow": 0, "Red": 0}
             averages[pc] = 0
             continue
-        
+
         green = (store_data["lane_total"] <= 140).sum()
         yellow = ((store_data["lane_total"] > 140) & (store_data["lane_total"] <= 150)).sum()
         red = (store_data["lane_total"] > 150).sum()
-        
+
         color_counts[pc] = {"Green": int(green), "Yellow": int(yellow), "Red": int(red)}
         averages[pc] = float(store_data["lane_total"].mean())
-    
+
     return color_counts, averages
 
 
 def calculate_labor_metrics(df: pd.DataFrame) -> Tuple[Dict[str, Dict[str, int]], Dict[str, float]]:
     """
-    Calculate Labor rankings and averages.
-    
+    Calculate Labor rankings and averages by week.
+
     Excludes: "DD Manager" and "DD Manager - Salary"
-    
+
     Args:
         df: Labor metrics DataFrame
-    
+
     Returns:
-        Tuple of (color_counts, averages)
+        Tuple of (color_counts, averages) where counts are weeks in each color
     """
     if df.empty:
         return {}, {}
-    
+
     # Exclude manager positions
     excluded_positions = ["DD Manager", "DD Manager - Salary"]
     df_filtered = df[~df["labor_position"].isin(excluded_positions)].copy()
-    
+
     if df_filtered.empty:
         return {}, {}
-    
+
     df_filtered["date"] = pd.to_datetime(df_filtered["date"])
-    
+
     # Sum percent_labor by date and pc_number
     daily_labor = df_filtered.groupby(["date", "pc_number"])["percent_labor"].sum().reset_index()
     daily_labor["percent_labor"] = daily_labor["percent_labor"] * 100  # Convert to percentage
-    
+
+    # Assign week (Sunday to Saturday)
+    daily_labor["week"] = daily_labor["date"].dt.to_period("W-SAT")
+
+    # Calculate weekly average
+    weekly_labor = daily_labor.groupby(["week", "pc_number"])["percent_labor"].mean().reset_index()
+
     color_counts = {}
     averages = {}
-    
+
     for pc in [s["pc_number"] for s in STORES]:
-        store_data = daily_labor[daily_labor["pc_number"] == pc]
-        
+        store_data = weekly_labor[weekly_labor["pc_number"] == pc]
+
         if len(store_data) == 0:
             color_counts[pc] = {"Green": 0, "Yellow": 0, "Red": 0}
             averages[pc] = 0
             continue
-        
+
         green = (store_data["percent_labor"] < 20).sum()
         yellow = ((store_data["percent_labor"] >= 20) & (store_data["percent_labor"] <= 23)).sum()
         red = (store_data["percent_labor"] > 23).sum()
-        
+
         color_counts[pc] = {"Green": int(green), "Yellow": int(yellow), "Red": int(red)}
         averages[pc] = float(store_data["percent_labor"].mean())
-    
+
     return color_counts, averages
 
 
 def calculate_osat_metrics(df: pd.DataFrame) -> Tuple[Dict[str, Dict[str, int]], Dict[str, float]]:
     """
-    Calculate OSAT rankings and averages.
-    
+    Calculate OSAT rankings and averages by week.
+
     Args:
         df: Medallia report DataFrame
-    
+
     Returns:
-        Tuple of (color_counts, averages) where averages are in percentage (0-100)
+        Tuple of (color_counts, averages) where averages are in percentage (0-100) and counts are weeks
     """
     if df.empty:
         return {}, {}
-    
+
     df["report_date"] = pd.to_datetime(df["report_date"])
-    
+
     # Calculate daily average OSAT and convert to percentage
     daily_osat = df.groupby(["report_date", "pc_number"])["osat"].mean().reset_index()
     daily_osat["osat_percent"] = (daily_osat["osat"] / 5) * 100
-    
+
+    # Assign week (Sunday to Saturday)
+    daily_osat["week"] = daily_osat["report_date"].dt.to_period("W-SAT")
+
+    # Calculate weekly average
+    weekly_osat = daily_osat.groupby(["week", "pc_number"])["osat_percent"].mean().reset_index()
+
     color_counts = {}
     averages = {}
-    
+
     for pc in [s["pc_number"] for s in STORES]:
-        store_data = daily_osat[daily_osat["pc_number"] == pc]
-        
+        store_data = weekly_osat[weekly_osat["pc_number"] == pc]
+
         if len(store_data) == 0:
             color_counts[pc] = {"Green": 0, "Yellow": 0, "Red": 0}
             averages[pc] = 0
             continue
-        
+
         green = (store_data["osat_percent"] > 90).sum()
         yellow = ((store_data["osat_percent"] >= 85) & (store_data["osat_percent"] <= 90)).sum()
         red = (store_data["osat_percent"] < 85).sum()
-        
+
         color_counts[pc] = {"Green": int(green), "Yellow": int(yellow), "Red": int(red)}
         averages[pc] = float(store_data["osat_percent"].mean())
-    
+
     return color_counts, averages
 
 
@@ -498,12 +522,12 @@ def color_for_metric(metric: str, value: float) -> str:
 def build_ranking_table(counts: Dict[str, Dict[str, int]]) -> pd.DataFrame:
     """
     Build ranking table from color counts.
-    
+
     Args:
         counts: {pc_number: {Green: count, Yellow: count, Red: count}}
-    
+
     Returns:
-        DataFrame sorted by Red count (descending) then pc_number
+        DataFrame sorted by Red (desc), Yellow (desc), Green (desc)
     """
     rows = []
     for store in STORES:
@@ -520,7 +544,7 @@ def build_ranking_table(counts: Dict[str, Dict[str, int]]) -> pd.DataFrame:
         )
 
     df = pd.DataFrame(rows)
-    df = df.sort_values(["Red", "pc_number"], ascending=[False, True])
+    df = df.sort_values(["Red", "Yellow", "Green"], ascending=[False, False, False])
     return df[["Store", "Green", "Yellow", "Red"]]
 
 
@@ -592,21 +616,16 @@ st.caption("Real-time performance metrics across all stores")
 # Sidebar
 config = get_supabase_config()
 with st.sidebar:
-    st.header("Filters")
-    period = st.selectbox(
-        "Time Period",
-        ["Week to Date", "Month to Date", "Year to Date"],
-        index=0,
-    )
-    
+    st.header("Settings")
+
     # Connection status
     has_url = bool(config["url"] and config["key"])
     has_pg = bool(
         config["host"] and config["database"] and config["user"] and config["password"]
     )
-    
+
     use_postgres = st.checkbox("Use PostgreSQL (faster)", value=has_pg)
-    
+
     if has_url or has_pg:
         st.success("✓ Supabase configured")
     else:
@@ -621,25 +640,25 @@ with st.sidebar:
             st.write("User:", mask_value(config["user"]))
             st.write("Port:", config["port"])
 
-# Get date range
-start_date, end_date = get_date_range(period)
-st.sidebar.info(f"📅 {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+# Get date range for Performance Rankings (always Year to Date)
+ranking_start_date, ranking_end_date = get_date_range("Year to Date")
+st.sidebar.info(f"📅 Performance Rankings: {ranking_start_date.strftime('%Y-%m-%d')} to {ranking_end_date.strftime('%Y-%m-%d')}")
 
-# Fetch data
-with st.spinner("Loading data..."):
-    hme_df = fetch_hme_data(start_date, end_date, use_postgres)
-    labor_df = fetch_labor_data(start_date, end_date, use_postgres)
-    medallia_df = fetch_medallia_data(start_date, end_date, use_postgres)
+# Fetch data for Performance Rankings (Year to Date)
+with st.spinner("Loading ranking data..."):
+    ranking_hme_df = fetch_hme_data(ranking_start_date, ranking_end_date, use_postgres)
+    ranking_labor_df = fetch_labor_data(ranking_start_date, ranking_end_date, use_postgres)
+    ranking_medallia_df = fetch_medallia_data(ranking_start_date, ranking_end_date, use_postgres)
 
-# Calculate metrics
-hme_counts, hme_avg = calculate_hme_metrics(hme_df)
-hme_dp2_counts, hme_dp2_avg = calculate_hme_dp2_metrics(hme_df)
-labor_counts, labor_avg = calculate_labor_metrics(labor_df)
-osat_counts, osat_avg = calculate_osat_metrics(medallia_df)
+# Calculate ranking metrics
+hme_counts, _ = calculate_hme_metrics(ranking_hme_df)
+hme_dp2_counts, _ = calculate_hme_dp2_metrics(ranking_hme_df)
+labor_counts, _ = calculate_labor_metrics(ranking_labor_df)
+osat_counts, _ = calculate_osat_metrics(ranking_medallia_df)
 
 # First Half - Ranking Tables
 st.subheader("📊 Performance Rankings")
-st.caption("Stores ranked by number of days in each performance category")
+st.caption("Stores ranked by number of weeks in each performance category (Year to Date - Sunday to Saturday)")
 
 ranking_cols = st.columns(4)
 with ranking_cols[0]:
@@ -655,9 +674,33 @@ with ranking_cols[3]:
     st.markdown("**OSAT**")
     st.dataframe(build_ranking_table(osat_counts), use_container_width=True, hide_index=True)
 
-# Second Half - Performance Table
+st.divider()
+
+# Second Half - Performance Table with its own filter
 st.subheader("📈 Store Performance Metrics")
-st.caption("Average performance across all stores")
+
+# Filter for Store Performance Metrics
+perf_period = st.selectbox(
+    "Time Period for Performance Metrics",
+    ["Week to Date", "Month to Date", "Year to Date"],
+    index=0,
+    key="perf_period"
+)
+
+perf_start_date, perf_end_date = get_date_range(perf_period)
+st.caption(f"Average performance across all stores ({perf_start_date.strftime('%Y-%m-%d')} to {perf_end_date.strftime('%Y-%m-%d')})")
+
+# Fetch data for Store Performance Metrics
+with st.spinner("Loading performance data..."):
+    perf_hme_df = fetch_hme_data(perf_start_date, perf_end_date, use_postgres)
+    perf_labor_df = fetch_labor_data(perf_start_date, perf_end_date, use_postgres)
+    perf_medallia_df = fetch_medallia_data(perf_start_date, perf_end_date, use_postgres)
+
+# Calculate performance metrics
+_, hme_avg = calculate_hme_metrics(perf_hme_df)
+_, hme_dp2_avg = calculate_hme_dp2_metrics(perf_hme_df)
+_, labor_avg = calculate_labor_metrics(perf_labor_df)
+_, osat_avg = calculate_osat_metrics(perf_medallia_df)
 
 styled_perf = build_performance_table(hme_avg, hme_dp2_avg, labor_avg, osat_avg)
 st.dataframe(styled_perf, use_container_width=True, hide_index=True)
@@ -666,8 +709,8 @@ st.dataframe(styled_perf, use_container_width=True, hide_index=True)
 st.divider()
 col1, col2, col3 = st.columns(3)
 with col1:
-    st.metric("Period", period)
+    st.metric("Performance Period", perf_period)
 with col2:
-    st.metric("HME Records", len(hme_df))
+    st.metric("HME Records (YTD)", len(ranking_hme_df))
 with col3:
-    st.metric("OSAT Responses", len(medallia_df))
+    st.metric("OSAT Responses (YTD)", len(ranking_medallia_df))
