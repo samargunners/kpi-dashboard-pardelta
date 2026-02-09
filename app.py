@@ -8,7 +8,7 @@ from typing import Dict, List, Tuple, Optional
 # Page config
 st.set_page_config(page_title="Pardelta Dashboard", layout="wide")
 
-# Real store data
+#  store data
 STORES = [
     {
         "pc_number": "301290",
