@@ -473,6 +473,27 @@ def calculate_osat_metrics(df: pd.DataFrame) -> Tuple[Dict[str, Dict[str, int]],
     return color_counts, averages
 
 
+def get_metric_ranges(metric: str) -> Dict[str, str]:
+    """
+    Get the range descriptions for each metric's color coding.
+    
+    Args:
+        metric: One of "HME", "HME DP_2", "Labour", "OSAT"
+    
+    Returns:
+        Dict with keys: "green", "yellow", "red" containing the range descriptions
+    """
+    if metric == "HME":
+        return {"green": "≤150", "yellow": "150-160", "red": ">160"}
+    elif metric == "HME DP_2":
+        return {"green": "≤140", "yellow": "140-150", "red": ">150"}
+    elif metric == "Labour":
+        return {"green": "<20", "yellow": "20-23", "red": ">23"}
+    elif metric == "OSAT":
+        return {"green": ">90", "yellow": "85-90", "red": "<85"}
+    return {"green": "", "yellow": "", "red": ""}
+
+
 def color_for_metric(metric: str, value: float) -> str:
     """
     Return CSS background color for a metric value.
@@ -519,12 +540,13 @@ def color_for_metric(metric: str, value: float) -> str:
     return ""
 
 
-def build_ranking_table(counts: Dict[str, Dict[str, int]]) -> pd.DataFrame:
+def build_ranking_table(counts: Dict[str, Dict[str, int]], metric: str = "") -> pd.DataFrame:
     """
-    Build ranking table from color counts.
+    Build ranking table from color counts with ranges displayed in column headers.
 
     Args:
         counts: {pc_number: {Green: count, Yellow: count, Red: count}}
+        metric: Name of metric (e.g., "HME", "Labour") for displaying ranges
 
     Returns:
         DataFrame sorted by Red (desc), Yellow (desc), Green (desc)
@@ -545,7 +567,18 @@ def build_ranking_table(counts: Dict[str, Dict[str, int]]) -> pd.DataFrame:
 
     df = pd.DataFrame(rows)
     df = df.sort_values(["Red", "Yellow", "Green"], ascending=[False, False, False])
-    return df[["Store", "Green", "Yellow", "Red"]]
+    df = df[["Store", "Green", "Yellow", "Red"]]
+    
+    # Add ranges to column names if metric provided
+    if metric:
+        ranges = get_metric_ranges(metric)
+        df = df.rename(columns={
+            "Green": f"Green ({ranges['green']})",
+            "Yellow": f"Yellow ({ranges['yellow']})",
+            "Red": f"Red ({ranges['red']})"
+        })
+    
+    return df
 
 
 def build_performance_table(
@@ -555,7 +588,7 @@ def build_performance_table(
     osat_avg: Dict[str, float],
 ) -> pd.DataFrame:
     """
-    Build performance table with all metrics.
+    Build performance table with all metrics and ranges displayed in column headers.
     
     Args:
         hme_avg: {pc_number: average_hme}
@@ -583,19 +616,41 @@ def build_performance_table(
     perf_df = pd.DataFrame(rows)
     perf_df = perf_df[["Store", "HME", "HME DP_2", "Labour", "OSAT"]]
 
-    # Apply styling
-    styled = perf_df.style
-    for metric in ["HME", "HME DP_2", "Labour", "OSAT"]:
-        styled = styled.applymap(lambda v, m=metric: color_for_metric(m, v), subset=[metric])
+    # Create column name mappings with ranges
+    metric_to_col = {
+        "HME": "HME",
+        "HME DP_2": "HME DP_2",
+        "Labour": "Labour",
+        "OSAT": "OSAT",
+    }
+    
+    column_name_map = {}
+    for metric, orig_col in metric_to_col.items():
+        ranges = get_metric_ranges(metric)
+        new_col = f"{metric}\n(G: {ranges['green']} | Y: {ranges['yellow']} | R: {ranges['red']})"
+        column_name_map[orig_col] = new_col
+    
+    # Rename dataframe columns to include ranges
+    perf_df = perf_df.rename(columns=column_name_map)
 
-    styled = styled.format(
-        {
-            "HME": "{:.0f}",
-            "HME DP_2": "{:.0f}",
-            "Labour": "{:.1f}%",
-            "OSAT": "{:.0f}%",
-        }
-    )
+    # Apply styling with new column names
+    styled = perf_df.style
+    for metric, orig_col in metric_to_col.items():
+        new_col = column_name_map[orig_col]
+        styled = styled.applymap(lambda v, m=metric: color_for_metric(m, v), subset=[new_col])
+
+    # Format columns with new names
+    format_dict = {}
+    for metric, orig_col in metric_to_col.items():
+        new_col = column_name_map[orig_col]
+        if metric in ["HME", "HME DP_2"]:
+            format_dict[new_col] = "{:.0f}"
+        elif metric == "Labour":
+            format_dict[new_col] = "{:.1f}%"
+        elif metric == "OSAT":
+            format_dict[new_col] = "{:.0f}%"
+    
+    styled = styled.format(format_dict)
 
     return styled
 
@@ -663,16 +718,16 @@ st.caption("Stores ranked by number of weeks in each performance category (Year 
 ranking_cols = st.columns(4)
 with ranking_cols[0]:
     st.markdown("**HME**")
-    st.dataframe(build_ranking_table(hme_counts), use_container_width=True, hide_index=True)
+    st.dataframe(build_ranking_table(hme_counts, "HME"), use_container_width=True, hide_index=True)
 with ranking_cols[1]:
     st.markdown("**HME DP_2**")
-    st.dataframe(build_ranking_table(hme_dp2_counts), use_container_width=True, hide_index=True)
+    st.dataframe(build_ranking_table(hme_dp2_counts, "HME DP_2"), use_container_width=True, hide_index=True)
 with ranking_cols[2]:
     st.markdown("**Labour**")
-    st.dataframe(build_ranking_table(labor_counts), use_container_width=True, hide_index=True)
+    st.dataframe(build_ranking_table(labor_counts, "Labour"), use_container_width=True, hide_index=True)
 with ranking_cols[3]:
     st.markdown("**OSAT**")
-    st.dataframe(build_ranking_table(osat_counts), use_container_width=True, hide_index=True)
+    st.dataframe(build_ranking_table(osat_counts, "OSAT"), use_container_width=True, hide_index=True)
 
 st.divider()
 
